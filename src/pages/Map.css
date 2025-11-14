@@ -14,7 +14,7 @@
   background: #f4f4f4;
 }
 
-/* 하단 버튼 (기존 유지) */
+/* 하단 버튼 */
 .map-controls {
   position: absolute;
   bottom: calc(20px + env(safe-area-inset-bottom));
@@ -25,57 +25,61 @@
   gap: 8px;
   padding: 0 16px;
   z-index: 1000;
+  box-sizing: border-box;
+}
+
+/* 버튼 기본 스타일 재정의 */
+.map-controls ion-button {
+  margin: 0 !important;
+  height: 44px;
+  min-height: 44px;
+}
+
+.map-controls ion-button::part(native) {
+  padding: 0 16px;
 }
 
 /* 💡 현재 위치 / 나침반 버튼을 하단 버튼 위쪽으로 이동 */
 .leaflet-top.leaflet-left {
   top: auto;
-  bottom: calc(90px + env(safe-area-inset-bottom)); /* 기존 하단 버튼 위로 띄우기 */
+  bottom: calc(90px + env(safe-area-inset-bottom));
   left: auto;
   right: 16px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  z-index: 1100; /* 하단 버튼보다 위 */
-}
-
-/* 버튼 스타일들 그대로 유지 */
-.draw-button {
-  flex: 1;
-  --background: #4285f4;
-  --background-activated: #357ae8;
-  --color: white;
-  font-weight: bold;
-}
-
-.clear-button {
-  flex-shrink: 0;
-}
-
-.reset-button {
-  flex-shrink: 0;
-  --border-color: #999;
-  --color: #666;
-}
-
-.confirm-button {
-  flex: 1;
-  --background: #2dd36f;
-  --background-activated: #28ba62;
-  --color: white;
-  font-weight: bold;
-}
-
-.stop-button {
-  flex: 1;
-  --background: #ff6b6b;
-  --background-activated: #ee5a5a;
-  --color: white;
-  font-weight: bold;
+  z-index: 1100;
 }
 
 /* 방향 마커 */
 .direction-marker {
   background: transparent !important;
   border: none !important;
+}
+
+/* 버튼 색상 스타일 */
+.map-controls ion-button[color="success"] {
+  --background: #2dd36f;
+  --background-activated: #28ba62;
+  --color: white;
+  font-weight: bold;
+}
+
+.map-controls ion-button[color="danger"] {
+  --background: #eb445a;
+  --background-activated: #cf3c4f;
+  --color: white;
+  font-weight: bold;
+}
+
+.map-controls ion-button[color="medium"] {
+  --border-color: #999;
+  --color: #666;
+}
+
+.map-controls ion-button:not([fill]):not([color]) {
+  --background: #4285f4;
+  --background-activated: #357ae8;
+  --color: white;
+  font-weight: bold;
 }

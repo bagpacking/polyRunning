@@ -1,10 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   IonContent,
-  IonHeader,
   IonPage,
-  IonTitle,
-  IonToolbar,
   IonButton,
   IonSpinner
 } from '@ionic/react';
@@ -18,7 +15,6 @@ interface LatLng {
   lng: number;
 }
 
-// iOS의 webkitCompassHeading을 위한 타입 확장
 interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
   webkitCompassHeading?: number;
 }
@@ -26,30 +22,32 @@ interface DeviceOrientationEventiOS extends DeviceOrientationEvent {
 const Map: React.FC = () => {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
-  const polylineRef = useRef<L.Polyline | null>(null);
+  const polylinesRef = useRef<L.Polyline[]>([]);
+  const currentPolylineRef = useRef<L.Polyline | null>(null);
   const routePolylineRef = useRef<L.Polyline | null>(null);
   const markerRef = useRef<L.Marker | null>(null);
-  const directionMarkerRef = useRef<L.Marker | null>(null); // 방향 표시 마커
+  const directionMarkerRef = useRef<L.Marker | null>(null);
   const drawingPathRef = useRef<LatLng[]>([]);
+  const allPathsRef = useRef<LatLng[][]>([]);
   const isDrawingRef = useRef(false);
   const currentLocationRef = useRef<LatLng | null>(null);
-  const currentHeadingRef = useRef<number>(0); // 현재 방향
+  const currentHeadingRef = useRef<number>(0);
   const [hasPath, setHasPath] = useState(false);
   const [isDrawingMode, setIsDrawingMode] = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
   const [isLoadingLocation, setIsLoadingLocation] = useState(true);
   const [locationError, setLocationError] = useState<string>('');
   const [currentHeading, setCurrentHeading] = useState<number>(0);
+  const [pressTimer, setPressTimer] = useState<NodeJS.Timeout | null>(null);
+  const [pressProgress, setPressProgress] = useState(0);
+  const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 방향 화살표 SVG 아이콘 생성
   const createDirectionIcon = (heading: number) => {
     const svgIcon = `
       <svg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg">
         <g transform="rotate(${heading} 30 30)">
-          <!-- 외곽 원 -->
           <circle cx="30" cy="30" r="28" fill="rgba(66, 133, 244, 0.2)" stroke="#4285f4" stroke-width="2"/>
-          <!-- 화살표 -->
           <path d="M 30 10 L 40 35 L 30 30 L 20 35 Z" fill="#4285f4" stroke="white" stroke-width="1"/>
-          <!-- 중심점 -->
           <circle cx="30" cy="30" r="4" fill="white" stroke="#4285f4" stroke-width="2"/>
         </g>
       </svg>
@@ -63,7 +61,6 @@ const Map: React.FC = () => {
     });
   };
 
-  // 위치 마커 아이콘 생성
   const createMarkerIcon = () => {
     return L.icon({
       iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
@@ -76,7 +73,6 @@ const Map: React.FC = () => {
     });
   };
 
-  // 지도 초기화
   useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return;
 
@@ -85,7 +81,7 @@ const Map: React.FC = () => {
     const map = L.map(mapRef.current, {
       center: defaultLocation,
       zoom: 15,
-      zoomControl: true
+      zoomControl: false
     });
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -107,8 +103,6 @@ const Map: React.FC = () => {
       }, 200);
     });
 
-    setupDrawing(map);
-
     return () => {
       if (mapInstanceRef.current) {
         mapInstanceRef.current.remove();
@@ -117,26 +111,21 @@ const Map: React.FC = () => {
     };
   }, []);
 
-  // 방향 센서 (나침반) 추적
   useEffect(() => {
     let orientationHandler: ((event: DeviceOrientationEvent) => void) | null = null;
 
     const setupOrientation = () => {
-      // iOS 13+ 권한 요청
       if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
         (DeviceOrientationEvent as any).requestPermission()
           .then((permissionState: string) => {
             if (permissionState === 'granted') {
               startOrientationTracking();
-            } else {
-              console.log('나침반 권한이 거부되었습니다.');
             }
           })
           .catch((error: Error) => {
             console.error('나침반 권한 요청 오류:', error);
           });
       } else {
-        // Android 및 이전 iOS
         startOrientationTracking();
       }
     };
@@ -144,22 +133,16 @@ const Map: React.FC = () => {
     const startOrientationTracking = () => {
       orientationHandler = (event: DeviceOrientationEvent) => {
         let heading = 0;
-        
-        // iOS용 타입 캐스팅
         const iosEvent = event as DeviceOrientationEventiOS;
 
         if (iosEvent.webkitCompassHeading !== undefined) {
-          // iOS
           heading = iosEvent.webkitCompassHeading;
         } else if (event.alpha !== null) {
-          // Android
           heading = 360 - event.alpha;
         }
 
         currentHeadingRef.current = heading;
         setCurrentHeading(heading);
-
-        // 방향 마커 업데이트
         updateDirectionMarker(currentLocationRef.current, heading);
       };
 
@@ -175,7 +158,6 @@ const Map: React.FC = () => {
     };
   }, []);
 
-  // 방향 마커 업데이트
   const updateDirectionMarker = (location: LatLng | null, heading: number) => {
     if (!location || !mapInstanceRef.current) return;
 
@@ -188,52 +170,39 @@ const Map: React.FC = () => {
     } else {
       directionMarkerRef.current = L.marker(position, { 
         icon,
-        zIndexOffset: 1000 // 다른 마커보다 위에 표시
+        zIndexOffset: 1000
       }).addTo(mapInstanceRef.current);
     }
   };
 
-  // 현재 위치 마커 업데이트
   const updateCurrentLocationMarker = (location: LatLng) => {
     if (!mapInstanceRef.current) return;
-
     const map = mapInstanceRef.current;
     const position: [number, number] = [location.lat, location.lng];
-
-    // 방향 마커 업데이트
     updateDirectionMarker(location, currentHeadingRef.current);
-
-    // 지도 중심을 현재 위치로 이동
     map.setView(position, 15);
   };
 
-  // 현재 위치 가져오기 및 실시간 추적
   useEffect(() => {
     let watchId: string | null = null;
 
     const setupLocation = async () => {
       try {
-        // 권한 확인 및 요청
         const permission = await Geolocation.checkPermissions();
-        console.log('현재 위치 권한:', permission);
 
         if (permission.location === 'prompt' || permission.location === 'prompt-with-rationale') {
-          // 권한 요청
           const requestResult = await Geolocation.requestPermissions();
-          console.log('위치 권한 요청 결과:', requestResult);
-          
           if (requestResult.location === 'denied') {
-            setLocationError('위치 권한이 거부되었습니다. 설정에서 위치 권한을 허용해주세요.');
+            setLocationError('위치 권한이 거부되었습니다.');
             setIsLoadingLocation(false);
             return;
           }
         } else if (permission.location === 'denied') {
-          setLocationError('위치 권한이 거부되었습니다. 설정에서 위치 권한을 허용해주세요.');
+          setLocationError('위치 권한이 거부되었습니다.');
           setIsLoadingLocation(false);
           return;
         }
 
-        // 초기 위치 가져오기
         const position = await Geolocation.getCurrentPosition({
           enableHighAccuracy: true,
           timeout: 10000,
@@ -245,8 +214,6 @@ const Map: React.FC = () => {
           lng: position.coords.longitude
         };
 
-        console.log('현재 위치:', location);
-
         currentLocationRef.current = location;
         setIsLoadingLocation(false);
         setLocationError('');
@@ -255,7 +222,6 @@ const Map: React.FC = () => {
           updateCurrentLocationMarker(location);
         }
 
-        // 실시간 위치 추적
         watchId = await Geolocation.watchPosition(
           {
             enableHighAccuracy: true,
@@ -276,7 +242,6 @@ const Map: React.FC = () => {
 
               currentLocationRef.current = location;
 
-              // 방향 마커 위치 업데이트
               if (directionMarkerRef.current && mapInstanceRef.current) {
                 directionMarkerRef.current.setLatLng([location.lat, location.lng]);
               }
@@ -286,12 +251,7 @@ const Map: React.FC = () => {
       } catch (error: any) {
         console.error('위치 정보 오류:', error);
         setIsLoadingLocation(false);
-
-        if (error.message) {
-          setLocationError(`위치 정보를 가져올 수 없습니다: ${error.message}`);
-        } else {
-          setLocationError('위치 정보를 가져올 수 없습니다.');
-        }
+        setLocationError('위치 정보를 가져올 수 없습니다.');
       }
     };
 
@@ -303,18 +263,6 @@ const Map: React.FC = () => {
       }
     };
   }, []);
-
-  useEffect(() => {
-    if (!mapInstanceRef.current) return;
-
-    const cleanup = setupDrawing(mapInstanceRef.current);
-    
-    return () => {
-      if (cleanup) {
-        cleanup();
-      }
-    };
-  }, [isDrawingMode]);
 
   const getDistance = (point1: LatLng, point2: LatLng): number => {
     const R = 6371000;
@@ -328,6 +276,44 @@ const Map: React.FC = () => {
     return R * c;
   };
 
+  const getLatLngFromPixel = (x: number, y: number, map: L.Map): LatLng | null => {
+    if (!map || !mapRef.current) return null;
+
+    try {
+      const container = map.getContainer();
+      if (!container || !container.offsetParent) {
+        return null;
+      }
+
+      const rect = mapRef.current.getBoundingClientRect();
+      const point = L.point(x - rect.left, y - rect.top);
+      const latlng = map.containerPointToLatLng(point);
+      return { lat: latlng.lat, lng: latlng.lng };
+    } catch (error) {
+      console.error('좌표 변환 오류:', error);
+      return null;
+    }
+  };
+
+  const updateCurrentPolyline = (map: L.Map) => {
+    if (drawingPathRef.current.length < 2) return;
+
+    const path = drawingPathRef.current.map(
+      (point) => [point.lat, point.lng] as [number, number]
+    );
+
+    if (currentPolylineRef.current) {
+      currentPolylineRef.current.setLatLngs(path);
+    } else {
+      currentPolylineRef.current = L.polyline(path, {
+        color: '#FF0000',
+        weight: 4,
+        opacity: 1
+      }).addTo(map);
+      polylinesRef.current.push(currentPolylineRef.current);
+    }
+  };
+
   const setupDrawing = (map: L.Map) => {
     const addPointToPath = (latlng: LatLng, minDistance = 0.5) => {
       const path = drawingPathRef.current;
@@ -335,14 +321,16 @@ const Map: React.FC = () => {
 
       if (!lastPoint || getDistance(lastPoint, latlng) > minDistance) {
         path.push(latlng);
-        setHasPath(path.length >= 2);
-        updatePolyline(map);
+        setHasPath(allPathsRef.current.length > 0 || path.length >= 2);
+        updateCurrentPolyline(map);
       }
     };
 
     const handleTouchStart = (e: TouchEvent) => {
       if (isDrawingMode && e.touches.length === 1) {
         isDrawingRef.current = true;
+        drawingPathRef.current = [];
+        currentPolylineRef.current = null;
         const touch = e.touches[0];
         const latlng = getLatLngFromPixel(touch.clientX, touch.clientY, map);
         if (latlng) {
@@ -366,7 +354,10 @@ const Map: React.FC = () => {
     const handleTouchEnd = (e: TouchEvent) => {
       if (isDrawingMode && e.touches.length === 0) {
         if (isDrawingRef.current && drawingPathRef.current.length > 0) {
-          setHasPath(true);
+          if (drawingPathRef.current.length >= 2) {
+            allPathsRef.current.push([...drawingPathRef.current]);
+          }
+          setHasPath(allPathsRef.current.length > 0);
         }
         isDrawingRef.current = false;
       }
@@ -375,6 +366,8 @@ const Map: React.FC = () => {
     const handleMouseDown = (e: MouseEvent) => {
       if (isDrawingMode && e.button === 0) {
         isDrawingRef.current = true;
+        drawingPathRef.current = [];
+        currentPolylineRef.current = null;
         const latlng = getLatLngFromPixel(e.clientX, e.clientY, map);
         if (latlng) {
           addPointToPath(latlng, 0);
@@ -394,7 +387,10 @@ const Map: React.FC = () => {
 
     const handleMouseUp = () => {
       if (isDrawingMode && isDrawingRef.current && drawingPathRef.current.length > 0) {
-        setHasPath(true);
+        if (drawingPathRef.current.length >= 2) {
+          allPathsRef.current.push([...drawingPathRef.current]);
+        }
+        setHasPath(allPathsRef.current.length > 0);
       }
       isDrawingRef.current = false;
     };
@@ -438,62 +434,29 @@ const Map: React.FC = () => {
     };
   };
 
-  const getLatLngFromPixel = (x: number, y: number, map: L.Map): LatLng | null => {
-    if (!map || !mapRef.current) return null;
-
-    try {
-      const container = map.getContainer();
-      if (!container || !container.offsetParent) {
-        return null;
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const cleanup = setupDrawing(mapInstanceRef.current);
+    return () => {
+      if (cleanup) {
+        cleanup();
       }
-
-      const rect = mapRef.current.getBoundingClientRect();
-      const point = L.point(x - rect.left, y - rect.top);
-      const crs = map.options.crs;
-      
-      if (!crs || typeof crs.project !== 'function') {
-        return null;
-      }
-
-      const latlng = map.containerPointToLatLng(point);
-      return { lat: latlng.lat, lng: latlng.lng };
-    } catch (error) {
-      console.error('좌표 변환 오류:', error);
-      return null;
-    }
-  };
-
-  const updatePolyline = (map: L.Map) => {
-    if (drawingPathRef.current.length < 2) return;
-
-    const path = drawingPathRef.current.map(
-      (point) => [point.lat, point.lng] as [number, number]
-    );
-
-    if (polylineRef.current) {
-      polylineRef.current.setLatLngs(path);
-    } else {
-      polylineRef.current = L.polyline(path, {
-        color: '#FF0000',
-        weight: 4,
-        opacity: 1
-      }).addTo(map);
-    }
-  };
+    };
+  }, [isDrawingMode]);
 
   const handleConfirm = () => {
-    if (drawingPathRef.current.length < 2) {
+    if (allPathsRef.current.length === 0) {
       alert('경로를 그려주세요.');
       return;
     }
 
-    const routeCoordinates = [...drawingPathRef.current];
+    const allCoordinates = allPathsRef.current.flat();
 
     if (routePolylineRef.current) {
       mapInstanceRef.current?.removeLayer(routePolylineRef.current);
     }
 
-    const routePath = routeCoordinates.map(
+    const routePath = allCoordinates.map(
       (point) => [point.lat, point.lng] as [number, number]
     );
 
@@ -503,10 +466,13 @@ const Map: React.FC = () => {
       opacity: 0.8
     }).addTo(mapInstanceRef.current!);
 
-    if (polylineRef.current && mapInstanceRef.current) {
-      mapInstanceRef.current.removeLayer(polylineRef.current);
-      polylineRef.current = null;
-    }
+    polylinesRef.current.forEach(polyline => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.removeLayer(polyline);
+      }
+    });
+    polylinesRef.current = [];
+    currentPolylineRef.current = null;
 
     if (currentLocationRef.current && mapInstanceRef.current) {
       updateCurrentLocationMarker(currentLocationRef.current);
@@ -523,29 +489,26 @@ const Map: React.FC = () => {
     }
 
     setIsDrawingMode(false);
+    setIsRunning(true);
     isDrawingRef.current = false;
     drawingPathRef.current = [];
+    allPathsRef.current = [];
     setHasPath(false);
     
     setTimeout(() => {
       if (!mapInstanceRef.current) return;
-      
       try {
         const map = mapInstanceRef.current;
         const container = map.getContainer();
-        
-        if (!container || !container.parentElement || !container.offsetParent) {
-          return;
-        }
-        
-        if (!map.dragging.enabled()) {
-          map.dragging.enable();
-        }
-        
-        try {
-          map.invalidateSize();
-        } catch (sizeError) {
-          // 무시
+        if (container && container.parentElement && container.offsetParent) {
+          if (!map.dragging.enabled()) {
+            map.dragging.enable();
+          }
+          try {
+            map.invalidateSize();
+          } catch (sizeError) {
+            // 무시
+          }
         }
       } catch (error) {
         console.warn('지도 드래그 활성화 오류:', error);
@@ -560,25 +523,35 @@ const Map: React.FC = () => {
     if (mapInstanceRef.current) {
       mapInstanceRef.current.dragging.disable();
 
-      if (drawingPathRef.current.length >= 2 && !polylineRef.current) {
-        const path = drawingPathRef.current.map(
-          (point) => [point.lat, point.lng] as [number, number]
-        );
-        polylineRef.current = L.polyline(path, {
-          color: '#FF0000',
-          weight: 4,
-          opacity: 1
-        }).addTo(mapInstanceRef.current);
+      if (allPathsRef.current.length > 0) {
+        allPathsRef.current.forEach(path => {
+          const leafletPath = path.map(
+            (point) => [point.lat, point.lng] as [number, number]
+          );
+          const polyline = L.polyline(leafletPath, {
+            color: '#FF0000',
+            weight: 4,
+            opacity: 1
+          }).addTo(mapInstanceRef.current!);
+          polylinesRef.current.push(polyline);
+        });
       }
     }
 
-    setHasPath(drawingPathRef.current.length >= 2);
+    setHasPath(allPathsRef.current.length > 0);
   };
 
   const handleStopDrawing = () => {
     setIsDrawingMode(false);
     isDrawingRef.current = false;
-    setHasPath(drawingPathRef.current.length >= 2);
+    
+    if (drawingPathRef.current.length >= 2) {
+      allPathsRef.current.push([...drawingPathRef.current]);
+    }
+    drawingPathRef.current = [];
+    currentPolylineRef.current = null;
+    
+    setHasPath(allPathsRef.current.length > 0);
 
     setTimeout(() => {
       if (mapInstanceRef.current) {
@@ -594,33 +567,88 @@ const Map: React.FC = () => {
     }, 100);
   };
 
-  const handleClear = () => {
-    if (polylineRef.current) {
-      mapInstanceRef.current?.removeLayer(polylineRef.current);
-      polylineRef.current = null;
+  const handleStopPress = () => {
+    setPressProgress(0);
+    
+    const timer = setTimeout(() => {
+      // 러닝 종료만 하고 경로는 유지
+      setIsRunning(false);
+      setPressProgress(0);
+      setPressTimer(null);
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
+    }, 1500);
+
+    setPressTimer(timer);
+
+    progressIntervalRef.current = setInterval(() => {
+      setPressProgress(prev => {
+        if (prev >= 100) {
+          if (progressIntervalRef.current) {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
+          }
+          return 100;
+        }
+        return prev + (100 / 15); // 1.5초 = 15 * 100ms
+      });
+    }, 100);
+  };
+
+  const handleStopRelease = () => {
+    if (pressTimer) {
+      clearTimeout(pressTimer);
+      setPressTimer(null);
     }
+    if (progressIntervalRef.current) {
+      clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
+    setPressProgress(0);
+  };
+
+  const handleStopClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+  };
+
+  const handleClear = () => {
+    polylinesRef.current.forEach(polyline => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.removeLayer(polyline);
+      }
+    });
+    polylinesRef.current = [];
+    currentPolylineRef.current = null;
     drawingPathRef.current = [];
+    allPathsRef.current = [];
     setHasPath(false);
   };
 
   const handleReset = () => {
-    if (polylineRef.current) {
-      mapInstanceRef.current?.removeLayer(polylineRef.current);
-      polylineRef.current = null;
-    }
+    polylinesRef.current.forEach(polyline => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.removeLayer(polyline);
+      }
+    });
+    polylinesRef.current = [];
+    currentPolylineRef.current = null;
+    
     if (routePolylineRef.current) {
       mapInstanceRef.current?.removeLayer(routePolylineRef.current);
       routePolylineRef.current = null;
     }
     drawingPathRef.current = [];
+    allPathsRef.current = [];
     setHasPath(false);
+    setIsRunning(false);
   };
 
   const handleGoToCurrentLocation = async () => {
     if (currentLocationRef.current && mapInstanceRef.current) {
       updateCurrentLocationMarker(currentLocationRef.current);
     } else {
-      // 위치 다시 가져오기 시도
       try {
         const position = await Geolocation.getCurrentPosition({
           enableHighAccuracy: true,
@@ -640,7 +668,6 @@ const Map: React.FC = () => {
     }
   };
 
-  // 나침반 권한 요청 버튼 (iOS용)
   const requestCompassPermission = async () => {
     if (typeof (DeviceOrientationEvent as any).requestPermission === 'function') {
       try {
@@ -702,7 +729,6 @@ const Map: React.FC = () => {
           </div>
         )}
 
-        {/* 방향 표시 */}
         <div style={{
           position: 'absolute',
           top: '20px',
@@ -737,7 +763,6 @@ const Map: React.FC = () => {
             >
               📍
             </IonButton>
-            {/* iOS 나침반 권한 요청 버튼 */}
             {typeof (DeviceOrientationEvent as any).requestPermission === 'function' && (
               <IonButton
                 onClick={requestCompassPermission}
@@ -754,62 +779,130 @@ const Map: React.FC = () => {
           </div>
         )}
 
-        <div className="map-controls">
-          {!isDrawingMode ? (
-            <>
+        <div className="map-controls" style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%' }}>
+          {isRunning ? (
+            <IonButton
+              color="danger"
+              onMouseDown={handleStopPress}
+              onMouseUp={handleStopRelease}
+              onMouseLeave={handleStopRelease}
+              onTouchStart={handleStopPress}
+              onTouchEnd={handleStopRelease}
+              onClick={handleStopClick}
+              style={{
+                position: 'relative',
+                overflow: 'hidden',
+                width: '100%',
+                margin: 0
+              }}
+            >
+              <span style={{ position: 'relative', zIndex: 2 }}>
+                정지 (1.5초간 누르기)
+              </span>
+              {pressProgress > 0 && (
+                <div style={{
+                  position: 'absolute',
+                  top: '0',
+                  left: '0',
+                  height: '100%',
+                  width: `${pressProgress}%`,
+                  background: 'rgba(139, 0, 0, 0.5)',
+                  transition: 'none',
+                  zIndex: 1
+                }} />
+              )}
+            </IonButton>
+          ) : routePolylineRef.current ? (
+            <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
               <IonButton
-                expand="block"
-                onClick={handleStartDrawing}
-                className="draw-button"
+                color="success"
+                onClick={() => setIsRunning(true)}
+                style={{ flex: 1, margin: 0 }}
               >
-                그리기
+                다시 시작
               </IonButton>
               <IonButton
                 fill="outline"
                 color="medium"
                 onClick={handleReset}
-                className="reset-button"
+                style={{ flex: 1, margin: 0 }}
               >
                 초기화
               </IonButton>
+            </div>
+          ) : !isDrawingMode ? (
+            <>
+              <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+                <IonButton
+                  onClick={handleStartDrawing}
+                  style={{ flex: 1, margin: 0 }}
+                >
+                  그리기
+                </IonButton>
+                <IonButton
+                  fill="outline"
+                  color="medium"
+                  onClick={handleReset}
+                  style={{ flex: 1, margin: 0 }}
+                >
+                  초기화
+                </IonButton>
+              </div>
               {hasPath && (
                 <IonButton
-                  expand="block"
+                  color="success"
                   onClick={handleConfirm}
-                  className="confirm-button"
+                  style={{ width: '100%', margin: 0 }}
                 >
-                  확인
+                  러닝 시작
                 </IonButton>
               )}
             </>
           ) : (
-            <>
-              {hasPath && (
-                <IonButton
-                  fill="outline"
-                  color="medium"
-                  onClick={handleClear}
-                  className="clear-button"
-                >
-                  지우기
-                </IonButton>
+            <div style={{ display: 'flex', gap: '8px', width: '100%' }}>
+              {hasPath ? (
+                <>
+                  <IonButton
+                    fill="outline"
+                    color="medium"
+                    onClick={handleClear}
+                    style={{ flex: 1, margin: 0 }}
+                  >
+                    지우기
+                  </IonButton>
+                  <IonButton
+                    onClick={handleStopDrawing}
+                    style={{ flex: 1, margin: 0 }}
+                  >
+                    정지
+                  </IonButton>
+                  <IonButton
+                    color="success"
+                    onClick={handleConfirm}
+                    style={{ flex: 1, margin: 0 }}
+                  >
+                    시작
+                  </IonButton>
+                </>
+              ) : (
+                <>
+                  <IonButton
+                    onClick={handleStopDrawing}
+                    style={{ flex: 1, margin: 0 }}
+                  >
+                    정지
+                  </IonButton>
+                  <IonButton
+                    color="success"
+                    onClick={handleConfirm}
+                    disabled={!hasPath}
+                    style={{ flex: 1, margin: 0 }}
+                  >
+                    시작
+                  </IonButton>
+                </>
               )}
-              <IonButton
-                expand="block"
-                onClick={handleStopDrawing}
-                className="stop-button"
-              >
-                정지
-              </IonButton>
-              <IonButton
-                expand="block"
-                onClick={handleConfirm}
-                disabled={!hasPath}
-                className="confirm-button"
-              >
-                확인
-              </IonButton>
-            </>
+            </div>
           )}
         </div>
       </IonContent>
